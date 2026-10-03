@@ -1,0 +1,769 @@
+openapi: 3.1.0
+info:
+  title: SHEild AI 2.0 API Contract
+  version: 0.1.0-mvp
+  description: |
+    SHEild AI 2.0 Phase 1 MVP Contract (Women-focused safety MVP).
+    
+    Architectural & Safety Guarantees:
+    - Base URL: /api/v1
+    - Auth: Bearer Supabase JWT (RS256/EdDSA verified against JWKS)
+    - Incident status and Notification/Alert status are strictly separated.
+    - FCM push accepted != delivered != acknowledged. Provider acceptance only proves provider queued the notification.
+    - Designed to be demographic-neutral so children, elderly, and other groups can be supported without breaking changes.
+    - College minor project: zero paid service dependencies assumed.
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development backend
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      description: Returns process health status without revealing internal secrets.
+      operationId: getHealthLive
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy and responsive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: "ok"
+                message: "SHEild AI backend is alive"
+
+  /incidents:
+    post:
+      summary: Create emergency incident (SOS or missed check-in)
+      description: |
+        Atomically creates a new incident and initiates guardian alert dispatch jobs.
+        Supports client idempotency via client_event_id to prevent duplicate triggers during network retry.
+        If Idempotency-Key header is provided and does not match client_event_id, the request is rejected with HTTP 400.
+      operationId: createIncident
+      tags:
+        - Incidents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: "Optional idempotency key. If provided, it must equal client_event_id."
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIncidentRequest'
+            example:
+              client_event_id: "b3c9266c-2f45-4c29-8f1c-62e13017931e"
+              trigger: "manual"
+              occurred_at: "2026-09-24T09:00:00Z"
+              location:
+                latitude: 22.7196
+                longitude: 75.8577
+                accuracy_m: 30.0
+                captured_at: "2026-09-24T08:59:58Z"
+              share_location: true
+      responses:
+        '201':
+          description: Incident successfully registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+              example:
+                id: "7d0d0ec1-19bc-4a4b-93ff-04c99546059d"
+                owner_id: "9e5cf42d-d558-45be-bb37-142f1cf5b47a"
+                client_event_id: "b3c9266c-2f45-4c29-8f1c-62e13017931e"
+                trigger: "manual"
+                status: "active"
+                alert_status: "queued"
+                created_at: "2026-09-24T09:00:01Z"
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /incidents/{incident_id}:
+    get:
+      summary: Retrieve incident details
+      description: Scoped access for the incident owner or verified authorized guardian only.
+      operationId: getIncident
+      tags:
+        - Incidents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Incident details including current status and latest alert progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetailResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /incidents/{incident_id}/acknowledge:
+    post:
+      summary: Acknowledge incident as an authorized guardian
+      description: |
+        Explicit human confirmation by a guardian that they have seen the alert.
+        Stops further escalation stages.
+      operationId: acknowledgeIncident
+      tags:
+        - Incidents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcknowledgeIncidentRequest'
+      responses:
+        '200':
+          description: Acknowledged successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcknowledgementResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /incidents/{incident_id}/location:
+    post:
+      summary: Submit live location update for an active incident
+      description: |
+        Called periodically by the mobile client while incident is active and location sharing is consented.
+      operationId: updateIncidentLocation
+      tags:
+        - Location
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationPayload'
+      responses:
+        '200':
+          description: Location recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationRecordResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+    get:
+      summary: Get latest known location for an active incident
+      description: |
+        Accessible only by incident owner or authorized guardians while active and not expired.
+        Location data subject to retention policy (24-72 hours).
+      operationId: getIncidentLatestLocation
+      tags:
+        - Location
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Latest recorded coordinate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationRecordResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /guardians:
+    get:
+      summary: List user's accepted and pending guardians
+      description: Returns the user's active trusted guardians along with priority escalation sequence.
+      operationId: listGuardians
+      tags:
+        - Guardians
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of linked guardians.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GuardianLinkResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+    post:
+      summary: Add or invite a guardian
+      description: |
+        Creates a guardian link invitation or records a trusted contact.
+        Note: Exact one-time invite token vs direct linking flow subject to Dev 1/2 alignment.
+      operationId: addGuardian
+      tags:
+        - Guardians
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddGuardianRequest'
+      responses:
+        '201':
+          description: Guardian invitation or link created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardianLinkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /journeys:
+    post:
+      summary: Start a safe journey session
+      description: |
+        Enrolls a safe journey with scheduled ETA, grace period, and selected guardian notification.
+      operationId: createJourney
+      tags:
+        - Safe Journey
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJourneyRequest'
+      responses:
+        '201':
+          description: Journey session started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JourneyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /journeys/{journey_id}:
+    get:
+      summary: Get journey status and details
+      description: Retrieve safe journey status (in_progress, completed, missed_check_in, cancelled).
+      operationId: getJourney
+      tags:
+        - Safe Journey
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: journey_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Journey details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JourneyResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase user access token.
+
+  responses:
+    BadRequestError:
+      description: Invalid request payload or parameter format.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: "BAD_REQUEST"
+              message: "Invalid coordinate values provided."
+              request_id: "req_01j8k9x"
+    UnauthorizedError:
+      description: Missing or invalid Supabase Bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: "UNAUTHORIZED"
+              message: "Token has expired or is invalid."
+              request_id: "req_01j8k9y"
+    ForbiddenError:
+      description: Access denied. User is not the owner or an authorized guardian.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: "FORBIDDEN"
+              message: "You are not authorized to view or acknowledge this incident."
+              request_id: "req_01j8k9z"
+    NotFoundError:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: "NOT_FOUND"
+              message: "Requested incident or journey does not exist."
+              request_id: "req_01j8k90"
+    RateLimitError:
+      description: Too many requests on sensitive alert/SOS route.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: "RATE_LIMITED"
+              message: "Rate limit exceeded. Please wait before retrying."
+              request_id: "req_01j8k91"
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: "BAD_REQUEST"
+            message:
+              type: string
+              example: "Detailed error description."
+            request_id:
+              type: string
+              nullable: true
+              example: "req_01j8k9x"
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          example: "ok"
+        message:
+          type: string
+          example: "SHEild AI backend is alive"
+
+    LocationPayload:
+      type: object
+      required:
+        - latitude
+        - longitude
+        - captured_at
+      properties:
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 22.7196
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: 75.8577
+        accuracy_m:
+          type: number
+          format: float
+          nullable: true
+          description: Estimated horizontal accuracy in meters.
+          example: 25.5
+        captured_at:
+          type: string
+          format: date-time
+          description: UTC timestamp when the device acquired this coordinate.
+          example: "2026-09-24T08:59:58Z"
+
+    LocationRecordResponse:
+      type: object
+      required:
+        - id
+        - incident_id
+        - latitude
+        - longitude
+        - captured_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        incident_id:
+          type: string
+          format: uuid
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        accuracy_m:
+          type: number
+          format: float
+          nullable: true
+        captured_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when location retention policy will purge this coordinate.
+
+    IncidentTrigger:
+      type: string
+      description: Mechanism that activated the emergency.
+      enum:
+        - manual
+        - shake
+        - missed_check_in
+        - voice_keyword
+        - other
+
+    IncidentStatus:
+      type: string
+      description: |
+        Authoritative lifecycle state of the incident itself.
+        Distinct from alert/notification dispatch progress.
+      enum:
+        - draft_local
+        - pending_upload
+        - active
+        - acknowledged
+        - resolved
+        - expired
+
+    AlertDeliveryState:
+      type: string
+      description: |
+        Progress of alert dispatch to guardians.
+        FCM accepted means provider queued it, NOT that guardian received/read it.
+      enum:
+        - queued
+        - provider_accepted
+        - provider_failed
+        - acknowledged
+
+    CreateIncidentRequest:
+      type: object
+      required:
+        - client_event_id
+        - trigger
+        - occurred_at
+      properties:
+        client_event_id:
+          type: string
+          format: uuid
+          description: Client-generated UUID for deduplication / offline retry idempotency.
+        trigger:
+          $ref: '#/components/schemas/IncidentTrigger'
+        occurred_at:
+          type: string
+          format: date-time
+          description: Client UTC timestamp when emergency action was completed.
+        location:
+          $ref: '#/components/schemas/LocationPayload'
+          nullable: true
+          description: Current or last known location. SOS must succeed even if GPS is denied/null.
+        share_location:
+          type: boolean
+          default: true
+          description: User consent flag to enable ongoing live location stream.
+
+    IncidentResponse:
+      type: object
+      required:
+        - id
+        - owner_id
+        - client_event_id
+        - trigger
+        - status
+        - alert_status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        client_event_id:
+          type: string
+          format: uuid
+        trigger:
+          $ref: '#/components/schemas/IncidentTrigger'
+        status:
+          $ref: '#/components/schemas/IncidentStatus'
+        alert_status:
+          $ref: '#/components/schemas/AlertDeliveryState'
+        created_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    IncidentDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/IncidentResponse'
+        - type: object
+          properties:
+            latest_location:
+              $ref: '#/components/schemas/LocationRecordResponse'
+              nullable: true
+            acknowledgements:
+              type: array
+              items:
+                $ref: '#/components/schemas/AcknowledgementResponse'
+
+    AcknowledgeIncidentRequest:
+      type: object
+      properties:
+        note:
+          type: string
+          maxLength: 280
+          example: "I am calling her right now."
+
+    AcknowledgementResponse:
+      type: object
+      required:
+        - id
+        - incident_id
+        - guardian_id
+        - acknowledged_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        incident_id:
+          type: string
+          format: uuid
+        guardian_id:
+          type: string
+          format: uuid
+        acknowledged_at:
+          type: string
+          format: date-time
+        note:
+          type: string
+          nullable: true
+
+    GuardianLinkResponse:
+      type: object
+      required:
+        - id
+        - guardian_id
+        - display_name
+        - priority
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        guardian_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+          example: "Priya (Sister)"
+        phone_number:
+          type: string
+          nullable: true
+          description: Display-masked phone number if applicable.
+        priority:
+          type: integer
+          minimum: 1
+          example: 1
+          description: Escalation sequence priority (1 = primary contact).
+        status:
+          type: string
+          enum:
+            - invited
+            - accepted
+            - revoked
+          example: "accepted"
+        consented_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AddGuardianRequest:
+      type: object
+      required:
+        - display_name
+        - priority
+      properties:
+        display_name:
+          type: string
+          example: "Sister Priya"
+        phone_number:
+          type: string
+          example: "+919876543210"
+        priority:
+          type: integer
+          minimum: 1
+          default: 1
+        relationship:
+          type: string
+          example: "Family"
+          description: Optional label (generic across demographic groups).
+
+    CreateJourneyRequest:
+      type: object
+      required:
+        - destination_label
+        - eta_at
+      properties:
+        destination_label:
+          type: string
+          example: "Hostel / Home"
+        destination_location:
+          $ref: '#/components/schemas/LocationPayload'
+          nullable: true
+        eta_at:
+          type: string
+          format: date-time
+          description: Estimated time of arrival in UTC.
+        grace_seconds:
+          type: integer
+          minimum: 0
+          default: 900
+          description: Time in seconds after ETA before missed check-in status triggers alerts (e.g. 900 = 15m).
+        guardian_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Specific guardians to notify upon missed check-in.
+
+    JourneyResponse:
+      type: object
+      required:
+        - id
+        - owner_id
+        - destination_label
+        - eta_at
+        - grace_seconds
+        - status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        destination_label:
+          type: string
+        eta_at:
+          type: string
+          format: date-time
+        grace_seconds:
+          type: integer
+        status:
+          type: string
+          enum:
+            - in_progress
+            - completed
+            - missed_check_in
+            - cancelled
+          example: "in_progress"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
