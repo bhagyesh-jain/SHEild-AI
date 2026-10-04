@@ -1,0 +1,455 @@
+openapi: 3.0.3
+info:
+  title: SHEild AI 2.0 API Contract
+  description: OpenAPI 3.0 specification for SHEild AI personal safety platform.
+  version: 2.0.0
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development backend server
+
+paths:
+  /health/live:
+    get:
+      summary: Health check endpoint
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    example: "2026-10-04T12:00:00Z"
+
+  /me:
+    get:
+      summary: Get current authenticated user profile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User profile info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+
+  /devices:
+    post:
+      summary: Register device FCM token
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fcm_token, platform]
+              properties:
+                fcm_token:
+                  type: string
+                platform:
+                  type: string
+                  example: android
+      responses:
+        '200':
+          description: Device registered
+
+  /guardian-invites:
+    post:
+      summary: Create short-lived guardian invite token
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+      responses:
+        '201':
+          description: Invite created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invite_token:
+                    type: string
+                  invite_url:
+                    type: string
+                  expires_at:
+                    type: string
+
+  /guardian-invites/{token}/accept:
+    post:
+      summary: Guardian accepts invitation link
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Guardian invitation accepted
+
+  /guardians:
+    get:
+      summary: List accepted guardians for user
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of guardians
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GuardianLink'
+
+  /incidents:
+    post:
+      summary: Create SOS incident (Idempotent)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIncidentRequest'
+      responses:
+        '201':
+          description: Incident created or retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+    get:
+      summary: List incidents for user or guardian
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of incidents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Incident'
+
+  /incidents/{id}:
+    get:
+      summary: Get detailed incident
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detailed incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
+
+  /incidents/{id}/acknowledge:
+    post:
+      summary: Guardian acknowledges active incident
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Incident acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+
+  /incidents/{id}/resolve:
+    post:
+      summary: Resolve incident
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Incident resolved
+
+  /incidents/{id}/locations:
+    post:
+      summary: Submit live location point during active incident
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationPoint'
+      responses:
+        '200':
+          description: Location recorded
+
+  /incidents/{id}/locations/latest:
+    get:
+      summary: Get latest location point for authorized incident
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Latest location point
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocationPoint'
+
+  /journeys:
+    post:
+      summary: Create safe journey
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination_label, eta_minutes]
+              properties:
+                destination_label:
+                  type: string
+                eta_minutes:
+                  type: integer
+                grace_seconds:
+                  type: integer
+      responses:
+        '201':
+          description: Journey created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Journey'
+    get:
+      summary: List user journeys
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of journeys
+
+  /journeys/{id}/check-in:
+    post:
+      summary: Check in for journey safely
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Checked in
+
+  /journeys/{id}/cancel:
+    post:
+      summary: Cancel active journey
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Journey cancelled
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        display_name:
+          type: string
+        phone_number:
+          type: string
+
+    GuardianLink:
+      type: object
+      properties:
+        id:
+          type: string
+        guardian_id:
+          type: string
+        guardian_name:
+          type: string
+        guardian_email:
+          type: string
+        priority:
+          type: integer
+        consented_at:
+          type: string
+
+    LocationPoint:
+      type: object
+      required: [latitude, longitude]
+      properties:
+        latitude:
+          type: number
+        longitude:
+          type: number
+        accuracy_m:
+          type: number
+        captured_at:
+          type: string
+
+    CreateIncidentRequest:
+      type: object
+      required: [client_event_id, trigger]
+      properties:
+        client_event_id:
+          type: string
+        trigger:
+          type: string
+          enum: [manual, shake, voice, journey_timeout]
+        occurred_at:
+          type: string
+        location:
+          $ref: '#/components/schemas/LocationPoint'
+        share_location:
+          type: boolean
+
+    Incident:
+      type: object
+      properties:
+        id:
+          type: string
+        owner_id:
+          type: string
+        user_name:
+          type: string
+        client_event_id:
+          type: string
+        trigger:
+          type: string
+        status:
+          type: string
+          enum: [draft_local, pending_upload, active, acknowledged, resolved, expired]
+        alert_status:
+          type: string
+          enum: [queued, provider_accepted, provider_failed, guardian_acknowledged]
+        started_at:
+          type: string
+        acknowledged_at:
+          type: string
+        resolved_at:
+          type: string
+        location:
+          $ref: '#/components/schemas/LocationPoint'
+
+    IncidentDetail:
+      allOf:
+        - $ref: '#/components/schemas/Incident'
+        - type: object
+          properties:
+            guardians_notified:
+              type: array
+              items:
+                type: string
+            acknowledgements:
+              type: array
+              items:
+                type: object
+                properties:
+                  guardian_id:
+                    type: string
+                  guardian_name:
+                    type: string
+                  acknowledged_at:
+                    type: string
+
+    Journey:
+      type: object
+      properties:
+        id:
+          type: string
+        owner_id:
+          type: string
+        destination_label:
+          type: string
+        eta_at:
+          type: string
+        status:
+          type: string
+          enum: [active, completed, missed_check_in, cancelled]
+        created_at:
+          type: string
