@@ -7,7 +7,7 @@ info:
     
     Architectural & Safety Guarantees:
     - Base URL: /api/v1
-    - Auth: Bearer Supabase JWT (RS256/EdDSA verified against JWKS)
+    - Auth: Bearer Supabase JWT (ES256/RS256 verified against JWKS)
     - Incident status and Notification/Alert status are strictly separated.
     - FCM push accepted != delivered != acknowledged. Provider acceptance only proves provider queued the notification.
     - Designed to be demographic-neutral so children, elderly, and other groups can be supported without breaking changes.
@@ -34,7 +34,40 @@ paths:
                 status: "ok"
                 message: "SHEild AI backend is alive"
 
+  /health/ready:
+    get:
+      summary: Readiness probe
+      description: Checks whether Supabase/PostgREST responds. Liveness stays independent of this check.
+      operationId: getHealthReady
+      tags: [Health]
+      responses:
+        '200':
+          description: Required database dependency is available.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+        '503': { description: Required database service is unavailable. }
+
   /incidents:
+    get:
+      summary: List recent active incidents visible to the caller
+      description: |
+        Returns unexpired active and acknowledged incidents ordered newest first. The
+        caller's Supabase JWT and row-level security determine which incidents are visible.
+      operationId: listIncidents
+      tags:
+        - Incidents
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Visible active incidents.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentListResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
     post:
       summary: Create emergency incident (SOS or missed check-in)
       description: |
@@ -89,8 +122,11 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
-        '429':
-          $ref: '#/components/responses/RateLimitError'
+        '200':
+          description: Existing incident returned for a duplicate owner/client_event_id retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentResponse' }
 
   /incidents/{incident_id}:
     get:
@@ -121,6 +157,45 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+
+  /incidents/history:
+    get:
+      summary: List the authenticated owner's recent incident history
+      description: RLS and an explicit owner_id filter limit results to the caller's own incidents; up to 100 newest rows.
+      operationId: listIncidentHistory
+      tags: [Incidents]
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Owner incident history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IncidentListResponse' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+
+  /incidents/{incident_id}/deliveries:
+    get:
+      summary: List incident alert delivery progress
+      description: Owner and currently accepted guardians can view permitted delivery fields; provider references are not exposed.
+      operationId: listIncidentDeliveries
+      tags: [Alerts]
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: incident_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Delivery state, guardian, priority stage, attempts and retry time.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AlertDeliveryItem' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
 
   /incidents/{incident_id}/acknowledge:
     post:
@@ -159,12 +234,49 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: Another guardian already acknowledged the incident or it left the active state.
+
+  /incidents/{incident_id}/resolve:
+    post:
+      summary: Resolve an active or acknowledged incident
+      description: |
+        Marks the incident as resolved. Terminal state.
+        Only the incident owner can resolve their own incident.
+      operationId: resolveIncident
+      tags:
+        - Incidents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: incident_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Incident successfully resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
 
   /incidents/{incident_id}/location:
     post:
       summary: Submit live location update for an active incident
       description: |
         Called periodically by the mobile client while incident is active and location sharing is consented.
+        Retries with the same incident and captured_at return the same location record; different values for that sample key return 409.
       operationId: updateIncidentLocation
       tags:
         - Location
@@ -196,12 +308,14 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: A conflicting location payload reused the same incident/captured_at idempotency key.
 
     get:
       summary: Get latest known location for an active incident
       description: |
         Accessible only by incident owner or authorized guardians while active and not expired.
-        Location data subject to retention policy (24-72 hours).
+        Location data is retained for no more than 48 hours from capture.
       operationId: getIncidentLatestLocation
       tags:
         - Location
@@ -227,7 +341,6 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
-
   /guardians:
     get:
       summary: List user's accepted and pending guardians
@@ -242,42 +355,146 @@ paths:
           description: List of linked guardians.
           content:
             application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GuardianLinkResponse'
+              schema: { $ref: '#/components/schemas/GuardianRelationshipList' }
         '401':
           $ref: '#/components/responses/UnauthorizedError'
 
+  /guardians/invites:
+    get:
+      summary: List the owner's invitation history
+      description: Invitation hashes are never returned.
+      operationId: listGuardianInvites
+      tags: [Guardians]
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Invitations created by this owner. Token hashes are excluded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuardianInviteList' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
     post:
-      summary: Add or invite a guardian
-      description: |
-        Creates a guardian link invitation or records a trusted contact.
-        Note: Exact one-time invite token vs direct linking flow subject to Dev 1/2 alignment.
-      operationId: addGuardian
-      tags:
-        - Guardians
-      security:
-        - BearerAuth: []
+      summary: Create a one-time guardian invitation
+      description: Authenticated owner only. Returns the random token once; only its SHA-256 hash is persisted. Token expires after seven days.
+      operationId: createGuardianInvite
+      tags: [Guardians]
+      security: [{ BearerAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddGuardianRequest'
+              type: object
+              required: [display_name, phone_number, priority]
+              properties:
+                display_name: { type: string, minLength: 1, maxLength: 120 }
+                phone_number: { type: string, minLength: 3, maxLength: 40 }
+                priority: { type: integer, minimum: 1, maximum: 2147483647 }
       responses:
         '201':
-          description: Guardian invitation or link created.
+          description: Invite created with one-time token.
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/GuardianLinkResponse'
-        '400':
-          $ref: '#/components/responses/BadRequestError'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
+              schema: { $ref: '#/components/schemas/GuardianInviteCreated' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '409': { description: Priority collision. }
+  /guardians/accept:
+    post:
+      summary: Accept a guardian invitation
+      description: Atomic, one-use consent operation; authenticated user cannot accept their own invitation.
+      operationId: acceptGuardianInvite
+      tags: [Guardians]
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32 }
+      responses:
+        '201':
+          description: Accepted guardian relationship.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuardianRelationship' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '409': { description: Invalid, expired, used, duplicate, or priority-conflicting invite. }
+  /guardians/relationships:
+    get:
+      summary: List relationships where the caller is the guardian
+      description: RLS exposes only relationships linked to the authenticated guardian account.
+      operationId: listMyGuardianships
+      tags: [Guardians]
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Authorized incoming guardian relationships.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuardianRelationshipList' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+  /guardians/{link_id}/revoke:
+    post:
+      summary: Revoke an accepted guardian relationship
+      description: Owner only; revocation preserves the relationship row and immediately removes relationship-based RLS visibility.
+      operationId: revokeGuardian
+      tags: [Guardians]
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: link_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Revoked relationship.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuardianRelationship' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+  /guardians/{link_id}/priority:
+    patch:
+      summary: Update guardian priority
+      description: Owner only; active priority uniqueness is enforced by the database.
+      operationId: updateGuardianPriority
+      tags: [Guardians]
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: link_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priority]
+              properties: { priority: { type: integer, minimum: 1, maximum: 2147483647 } }
+      responses:
+        '200':
+          description: Updated relationship.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuardianRelationship' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { description: Active guardian priority collision. }
 
   /journeys:
+    get:
+      summary: List visible journeys
+      description: Owners see their journeys; accepted guardians see only journeys that selected them and remain unrevoked.
+      operationId: listJourneys
+      tags: [Safe Journey]
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Journeys visible under RLS.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JourneyList' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
     post:
       summary: Start a safe journey session
       description: |
@@ -293,6 +510,12 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateJourneyRequest'
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Optional UUID deduplication key; if body client_event_id is also supplied it must match.
+          schema: { type: string, format: uuid }
       responses:
         '201':
           description: Journey session started.
@@ -300,6 +523,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyResponse'
+        '200':
+          description: Existing journey returned for a repeated client_event_id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JourneyResponse' }
         '400':
           $ref: '#/components/responses/BadRequestError'
         '401':
@@ -334,6 +562,69 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+
+  /journeys/{journey_id}/complete:
+    post:
+      summary: Complete an in-progress journey
+      description: Owner-only conditional transition; retries after completion return the existing journey.
+      operationId: completeJourney
+      tags: [Safe Journey]
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: journey_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Completed journey; repeating completion returns the same record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JourneyResponse' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { description: Journey is already in a different terminal state. }
+
+  /journeys/{journey_id}/alerts:
+    get:
+      summary: List delivery status for missed-journey alerts
+      description: Visible to the journey owner and selected accepted guardians under RLS.
+      operationId: listJourneyAlerts
+      tags: [Safe Journey]
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: journey_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Journey alert queue progress.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/JourneyAlertItem' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+
+  /journeys/{journey_id}/cancel:
+    post:
+      summary: Cancel an in-progress journey
+      operationId: cancelJourney
+      tags: [Safe Journey]
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: journey_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Cancelled journey; repeating cancellation returns the same record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JourneyResponse' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { description: Journey is already in a different terminal state. }
 
 components:
   securitySchemes:
@@ -406,6 +697,9 @@ components:
       required:
         - error
       properties:
+        detail:
+          type: string
+          description: Compatibility message retained for existing clients.
         error:
           type: object
           required:
@@ -569,6 +863,8 @@ components:
         - client_event_id
         - trigger
         - status
+        - started_at
+        - share_location
         - alert_status
         - created_at
       properties:
@@ -585,6 +881,12 @@ components:
           $ref: '#/components/schemas/IncidentTrigger'
         status:
           $ref: '#/components/schemas/IncidentStatus'
+        started_at:
+          type: string
+          format: date-time
+        share_location:
+          type: boolean
+          description: Whether the incident owner consented to share location updates.
         alert_status:
           $ref: '#/components/schemas/AlertDeliveryState'
         created_at:
@@ -594,6 +896,17 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    IncidentListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          description: Active incidents in newest-first order; scoped by caller authorization.
+          items:
+            $ref: '#/components/schemas/IncidentResponse'
 
     IncidentDetailResponse:
       allOf:
@@ -706,11 +1019,22 @@ components:
         - destination_label
         - eta_at
       properties:
+        client_event_id:
+          type: string
+          format: uuid
+          description: Optional client-generated key. A retry returns the existing journey.
         destination_label:
           type: string
           example: "Hostel / Home"
-        destination_location:
-          $ref: '#/components/schemas/LocationPayload'
+        destination_lat:
+          type: number
+          minimum: -90
+          maximum: 90
+          nullable: true
+        destination_lon:
+          type: number
+          minimum: -180
+          maximum: 180
           nullable: true
         eta_at:
           type: string
@@ -719,6 +1043,7 @@ components:
         grace_seconds:
           type: integer
           minimum: 0
+          maximum: 86400
           default: 900
           description: Time in seconds after ETA before missed check-in status triggers alerts (e.g. 900 = 15m).
         guardian_ids:
@@ -727,6 +1052,7 @@ components:
             type: string
             format: uuid
           description: Specific guardians to notify upon missed check-in.
+      description: Destination coordinates must be supplied together. ETA must be in the future. Omitted guardian_ids selects all currently accepted guardians.
 
     JourneyResponse:
       type: object
@@ -747,6 +1073,15 @@ components:
           format: uuid
         destination_label:
           type: string
+        destination_lat:
+          type: number
+          nullable: true
+        destination_lon:
+          type: number
+          nullable: true
+        guardian_ids:
+          type: array
+          items: { type: string, format: uuid }
         eta_at:
           type: string
           format: date-time
@@ -767,3 +1102,89 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    AlertDeliveryItem:
+      type: object
+      required: [id, incident_id, guardian_id, channel, stage, state, attempt_count]
+      properties:
+        id: { type: string, format: uuid }
+        incident_id: { type: string, format: uuid }
+        guardian_id: { type: string, format: uuid }
+        channel: { type: string, enum: [push_fcm, sms_mock, email] }
+        stage: { type: integer, minimum: 1, description: Guardian priority order. }
+        state: { $ref: '#/components/schemas/AlertDeliveryState' }
+        attempt_count: { type: integer, minimum: 0 }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
+
+    GuardianRelationship:
+      type: object
+      required: [id, owner_id, guardian_id, priority, status]
+      properties:
+        id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        guardian_id: { type: string, format: uuid }
+        display_name: { type: string, nullable: true }
+        phone_number: { type: string, nullable: true, description: Masked for owner guardian-list responses. }
+        priority: { type: integer, minimum: 1 }
+        status: { type: string, enum: [invited, accepted, revoked] }
+        consented_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+
+    GuardianRelationshipList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/GuardianRelationship' }
+
+    GuardianInviteCreated:
+      type: object
+      required: [id, display_name, priority, expires_at, token]
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string }
+        priority: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+        token: { type: string, description: Plaintext invitation token returned once to the owner. }
+
+    GuardianInviteItem:
+      type: object
+      required: [id, display_name, priority, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string }
+        phone_number: { type: string }
+        priority: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+        accepted_by: { type: string, format: uuid, nullable: true }
+        used_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    GuardianInviteList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/GuardianInviteItem' }
+
+    JourneyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/JourneyResponse' }
+
+    JourneyAlertItem:
+      type: object
+      required: [id, journey_id, guardian_id, priority, state, attempt_count]
+      properties:
+        id: { type: string, format: uuid }
+        journey_id: { type: string, format: uuid }
+        guardian_id: { type: string, format: uuid }
+        priority: { type: integer, minimum: 1 }
+        state: { type: string, enum: [queued, provider_accepted, provider_failed] }
+        attempt_count: { type: integer, minimum: 0 }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
