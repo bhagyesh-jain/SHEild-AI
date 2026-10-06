@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { View, Text } from "react-native";
+import { Text } from "react-native";
 
 export default function TabsLayout() {
   return (
@@ -7,42 +7,49 @@ export default function TabsLayout() {
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: "#0B0F19",
-          borderTopColor: "#1F2937",
+          backgroundColor: "#090e1d",
+          borderTopColor: "#1e293b",
           height: 64,
           paddingBottom: 8,
-          paddingTop: 8
+          paddingTop: 8,
         },
-        tabBarActiveTintColor: "#42D6BD",
-        tabBarInactiveTintColor: "#6B7280"
+        tabBarActiveTintColor: "#38bdf8",
+        tabBarInactiveTintColor: "#64748b",
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: "SOS Alert",
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>🚨</Text>
-        }}
-      />
-      <Tabs.Screen
-        name="journey"
-        options={{
-          title: "Safe Journey",
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>📍</Text>
+          title: "Protection",
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>🛡️</Text>,
         }}
       />
       <Tabs.Screen
         name="guardians"
         options={{
           title: "Guardians",
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>🛡️</Text>
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>👥</Text>,
         }}
       />
       <Tabs.Screen
-        name="history"
+        name="journey"
         options={{
-          title: "History",
-          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>📜</Text>
+          title: "Safe Journey",
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>🚗</Text>,
+        }}
+      />
+      <Tabs.Screen
+        name="triggers"
+        options={{
+          title: "Triggers",
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>⚡</Text>,
+        }}
+      />
+      <Tabs.Screen
+        name="incident"
+        options={{
+          title: "Guardian Log",
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 18 }}>📋</Text>,
         }}
       />
     </Tabs>

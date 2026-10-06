@@ -1,4 +1,16 @@
-const API_BASE_URL = "http://localhost:8000/api/v1";
+import { Platform } from "react-native";
+
+const getApiBaseUrl = (): string => {
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+  if (Platform.OS === "android") {
+    return "http://10.0.2.2:8000/api/v1";
+  }
+  return "http://localhost:8000/api/v1";
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 export interface CreateIncidentPayload {
   client_event_id: string;
