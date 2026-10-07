@@ -19,9 +19,12 @@ import { Accelerometer } from "expo-sensors";
 import { createIncidentAPI, fetchIncidentAPI, resolveIncidentAPI, sendLocationAPI, IncidentResponse } from "../../src/services/api";
 import { offlineOutbox } from "../../src/services/offline-outbox";
 import { shakeDetector } from "../../src/services/shake-detector";
+import { useAuth } from "../../src/context/AuthContext";
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { user, signOut } = useAuth();
+  const userDisplayName = user?.user_metadata?.display_name || user?.email?.split("@")[0] || "User";
   const [location, setLocation] = useState<any>({ latitude: 28.6139, longitude: 77.2090, accuracy: 12 });
   const [activeIncident, setActiveIncident] = useState<IncidentResponse | null>(null);
   
@@ -278,12 +281,25 @@ export default function HomeScreen() {
           <Text style={styles.shieldIcon}>🛡️</Text>
           <Text style={styles.brandTitle}>SHEild AI 2.0</Text>
         </View>
-        <TouchableOpacity onPress={() => router.push("/guardians" as any)} style={styles.guardiansLink}>
-          <Text style={styles.guardiansLinkText}>👥 4 Guardians</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <TouchableOpacity onPress={() => router.push("/guardians" as any)} style={styles.guardiansLink}>
+            <Text style={styles.guardiansLinkText}>👥 Guardians</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => {
+              Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+                { text: "Cancel", style: "cancel" },
+                { text: "Sign Out", style: "destructive", onPress: () => signOut() },
+              ]);
+            }}
+            style={styles.signOutHeaderBtn}
+          >
+            <Text style={styles.signOutHeaderBtnText}>Sign Out 🚪</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <Text style={styles.greetingTitle}>Hello, Aanchal 👋</Text>
+      <Text style={styles.greetingTitle}>Hello, {userDisplayName} 👋</Text>
 
       {/* Developer Failure State Simulators Card */}
       <View style={styles.simulatorCard}>
@@ -800,5 +816,18 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "800",
     fontSize: 13
+  },
+  signOutHeaderBtn: {
+    backgroundColor: "#1e293b",
+    borderWidth: 1,
+    borderColor: "#334155",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+  },
+  signOutHeaderBtnText: {
+    color: "#fca5a5",
+    fontSize: 11,
+    fontWeight: "700",
   }
 });

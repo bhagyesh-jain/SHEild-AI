@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { getAccessToken } from "./auth";
 
 const getApiBaseUrl = (): string => {
   if (process.env.EXPO_PUBLIC_API_URL) {
@@ -11,6 +12,14 @@ const getApiBaseUrl = (): string => {
 };
 
 const API_BASE_URL = getApiBaseUrl();
+
+async function getAuthHeader(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  return {};
+}
 
 export interface CreateIncidentPayload {
   client_event_id: string;
@@ -50,12 +59,13 @@ export interface IncidentResponse {
 
 export async function createIncidentAPI(payload: CreateIncidentPayload): Promise<IncidentResponse | null> {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/incidents`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": payload.client_event_id,
-        Authorization: "Bearer mobile_user_token"
+        ...authHeader
       },
       body: JSON.stringify(payload)
     });
@@ -70,8 +80,9 @@ export async function createIncidentAPI(payload: CreateIncidentPayload): Promise
 
 export async function fetchIncidentAPI(id: string): Promise<IncidentResponse | null> {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/incidents/${id}`, {
-      headers: { Authorization: "Bearer mobile_user_token" }
+      headers: { ...authHeader }
     });
     if (!res.ok) return null;
     return await res.json();
@@ -82,9 +93,10 @@ export async function fetchIncidentAPI(id: string): Promise<IncidentResponse | n
 
 export async function resolveIncidentAPI(id: string): Promise<boolean> {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/incidents/${id}/resolve`, {
       method: "POST",
-      headers: { Authorization: "Bearer mobile_user_token" }
+      headers: { ...authHeader }
     });
     return res.ok;
   } catch (err) {
@@ -94,11 +106,12 @@ export async function resolveIncidentAPI(id: string): Promise<boolean> {
 
 export async function sendLocationAPI(incidentId: string, location: { latitude: number; longitude: number; accuracy_m?: number }) {
   try {
+    const authHeader = await getAuthHeader();
     await fetch(`${API_BASE_URL}/incidents/${incidentId}/locations`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer mobile_user_token"
+        ...authHeader
       },
       body: JSON.stringify(location)
     });
@@ -109,8 +122,9 @@ export async function sendLocationAPI(incidentId: string, location: { latitude: 
 
 export async function fetchGuardiansAPI() {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/guardians`, {
-      headers: { Authorization: "Bearer mobile_user_token" }
+      headers: { ...authHeader }
     });
     if (!res.ok) return [];
     return await res.json();
@@ -121,11 +135,12 @@ export async function fetchGuardiansAPI() {
 
 export async function createGuardianInviteAPI() {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/guardian-invites`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer mobile_user_token"
+        ...authHeader
       },
       body: JSON.stringify({ note: "Add me as trusted guardian" })
     });
@@ -138,11 +153,12 @@ export async function createGuardianInviteAPI() {
 
 export async function createJourneyAPI(destination: string, etaMinutes: number) {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/journeys`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer mobile_user_token"
+        ...authHeader
       },
       body: JSON.stringify({ destination_label: destination, eta_minutes: etaMinutes })
     });
@@ -155,8 +171,9 @@ export async function createJourneyAPI(destination: string, etaMinutes: number) 
 
 export async function fetchJourneysAPI() {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/journeys`, {
-      headers: { Authorization: "Bearer mobile_user_token" }
+      headers: { ...authHeader }
     });
     if (!res.ok) return [];
     return await res.json();
@@ -167,9 +184,10 @@ export async function fetchJourneysAPI() {
 
 export async function checkInJourneyAPI(id: string) {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/journeys/${id}/check-in`, {
       method: "POST",
-      headers: { Authorization: "Bearer mobile_user_token" }
+      headers: { ...authHeader }
     });
     return res.ok;
   } catch (err) {
@@ -179,8 +197,9 @@ export async function checkInJourneyAPI(id: string) {
 
 export async function fetchIncidentsHistoryAPI(): Promise<IncidentResponse[]> {
   try {
+    const authHeader = await getAuthHeader();
     const res = await fetch(`${API_BASE_URL}/incidents`, {
-      headers: { Authorization: "Bearer mobile_user_token" }
+      headers: { ...authHeader }
     });
     if (!res.ok) return [];
     return await res.json();
